@@ -61,6 +61,9 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
         self._early_stop_requested = False
         self._tb_writer = None
         self._best_metrics = {}
+        # TensorBoard uses optimizer updates as its x-axis. Checkpoints are
+        # written at epoch boundaries, so this can be reconstructed on resume.
+        self._optimizer_step = 0
 
     def _class_names(self, count: int) -> List[str]:
         if self.label_manager.has_regions:
@@ -87,6 +90,7 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
 
     def on_train_start(self):
         super().on_train_start()
+        self._optimizer_step = self.current_epoch * self.num_iterations_per_epoch
         if self.local_rank == 0:
             try:
                 from torch.utils.tensorboard import SummaryWriter
@@ -100,6 +104,8 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
                 "config/early_stopping",
                 f"monitor=EMA(fg_mDice), "
                 f"checkpoint_monitor=raw fg_mDice, "
+                f"x_axis=optimizer_step, "
+                f"validation_interval={self.num_iterations_per_epoch} steps, "
                 f"patience={self.early_stopping_patience}, "
                 f"min_delta={self.early_stopping_min_delta}",
                 0,
@@ -111,13 +117,18 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
             self._tb_writer.add_scalar(
                 "loss/train",
                 float(self.logger.get_value("train_losses", step=-1)),
-                self.current_epoch,
+                self._optimizer_step,
             )
             self._tb_writer.add_scalar(
                 "learning_rate",
                 float(self.optimizer.param_groups[0]["lr"]),
-                self.current_epoch,
+                self._optimizer_step,
             )
+
+    def train_step(self, batch: dict) -> dict:
+        output = super().train_step(batch)
+        self._optimizer_step += 1
+        return output
 
     def on_validation_epoch_end(self, val_outputs: List[dict]):
         outputs = collate_outputs(val_outputs)
@@ -167,10 +178,12 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
             metrics[f"IoU/{name}"] = float(class_iou)
 
         if self._tb_writer is not None:
-            self._tb_writer.add_scalar("loss/validation", val_loss, self.current_epoch)
+            self._tb_writer.add_scalar(
+                "loss/validation", val_loss, self._optimizer_step
+            )
             for metric_name, value in metrics.items():
                 self._tb_writer.add_scalar(
-                    f"validation/{metric_name}", value, self.current_epoch
+                    f"validation/{metric_name}", value, self._optimizer_step
                 )
                 previous_best = self._best_metrics.get(metric_name, -np.inf)
                 if np.isfinite(value):
@@ -178,7 +191,7 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
                 self._tb_writer.add_scalar(
                     f"best/{metric_name}",
                     self._best_metrics.get(metric_name, previous_best),
-                    self.current_epoch,
+                    self._optimizer_step,
                 )
             self._tb_writer.flush()
 

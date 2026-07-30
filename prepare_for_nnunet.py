@@ -5,6 +5,8 @@ import argparse, csv, json, re, shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+# python prepare_for_nnunet.py /workspaces/l40-workspace/welti-masterarbeit/real_dataset_splits_70_15_15
+
 SUFFIX = ".nii.gz"
 LABELS = {"background": 0, "class_1": 1, "class_2": 2, "class_3": 3}
 

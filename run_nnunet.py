@@ -11,6 +11,8 @@ sudo apt install build-essential
 sudo apt install python3.12-dev
 """
 
+# python run_nnunet.py /workspaces/l40-workspace/nnUNet/results/real_dataset_splits_70_15_15/raw/Dataset501_real_dataset_splits_70_15_15
+
 TRAINER = "nnUNetTrainerDiceEarlyStoppingTensorboard"
 
 def execute(command: list[str], env: dict[str, str]) -> None:
