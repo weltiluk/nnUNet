@@ -1,8 +1,9 @@
 """nnU-Net trainer with MMSeg-like validation tracking.
 
 The standard nnU-Net loss is retained: Dice + cross entropy for label maps
-(Dice + BCE for region training). Early stopping and the best checkpoint use
-the non-smoothed foreground mean Dice.
+(Dice + BCE for region training). Early stopping uses the EMA-smoothed
+foreground mean Dice. The best checkpoint uses the highest raw validation
+foreground mean Dice.
 """
 
 import os
@@ -19,22 +20,35 @@ from nnunetv2.utilities.collate_outputs import collate_outputs
 
 
 class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
-    """Track classwise Dice/IoU and stop on validation ``fg_mDice``.
+    """Track classwise Dice/IoU and stop on EMA validation ``fg_mDice``.
 
     Configuration is intentionally done through environment variables because
     nnU-Net trainer classes have a fixed constructor:
 
     ``NNUNET_EARLY_STOPPING_PATIENCE`` (default 15),
-    ``NNUNET_EARLY_STOPPING_MIN_DELTA`` (default 0.0001).
+    ``NNUNET_EARLY_STOPPING_MIN_DELTA`` (default 0.001).
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        plans: dict,
+        configuration: str,
+        fold: int,
+        dataset_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+        super().__init__(
+            plans=plans,
+            configuration=configuration,
+            fold=fold,
+            dataset_json=dataset_json,
+            device=device,
+        )
         self.early_stopping_patience = int(
             os.getenv("NNUNET_EARLY_STOPPING_PATIENCE", "15")
         )
         self.early_stopping_min_delta = float(
-            os.getenv("NNUNET_EARLY_STOPPING_MIN_DELTA", "0.0001")
+            os.getenv("NNUNET_EARLY_STOPPING_MIN_DELTA", "0.001")
         )
         if self.early_stopping_patience < 1:
             raise ValueError("NNUNET_EARLY_STOPPING_PATIENCE must be >= 1")
@@ -42,6 +56,7 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
             raise ValueError("NNUNET_EARLY_STOPPING_MIN_DELTA must be >= 0")
 
         self._best_fg_mdice = -np.inf
+        self._best_ema_fg_mdice = -np.inf
         self._epochs_without_improvement = 0
         self._early_stop_requested = False
         self._tb_writer = None
@@ -83,7 +98,9 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
             self._tb_writer = SummaryWriter(join(self.output_folder, "tensorboard"))
             self._tb_writer.add_text(
                 "config/early_stopping",
-                f"monitor=fg_mDice, patience={self.early_stopping_patience}, "
+                f"monitor=EMA(fg_mDice), "
+                f"checkpoint_monitor=raw fg_mDice, "
+                f"patience={self.early_stopping_patience}, "
                 f"min_delta={self.early_stopping_min_delta}",
                 0,
             )
@@ -134,8 +151,15 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
         self.logger.log("mean_fg_dice", fg_mdice, self.current_epoch)
         self.logger.log("dice_per_class_or_region", dice.tolist(), self.current_epoch)
         self.logger.log("val_losses", val_loss, self.current_epoch)
+        ema_fg_mdice = float(
+            self.logger.get_value("ema_fg_dice", step=-1)
+        )
 
-        metrics = {"fg_mDice": fg_mdice, "fg_mIoU": fg_miou}
+        metrics = {
+            "fg_mDice": fg_mdice,
+            "EMA_fg_mDice": ema_fg_mdice,
+            "fg_mIoU": fg_miou,
+        }
         for name, class_dice, class_iou in zip(
             self._class_names(len(dice)), dice, iou
         ):
@@ -158,20 +182,31 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
                 )
             self._tb_writer.flush()
 
-        improved = fg_mdice > (
-            self._best_fg_mdice + self.early_stopping_min_delta
-        )
-        if improved:
+        # Model selection deliberately uses the raw validation fg_mDice.
+        if np.isfinite(fg_mdice) and fg_mdice > self._best_fg_mdice:
             self._best_fg_mdice = fg_mdice
-            self._epochs_without_improvement = 0
             self.print_to_log_file(
-                f"New best fg_mDice: {self._best_fg_mdice:.4f}"
+                "New best raw validation fg_mDice: "
+                f"{self._best_fg_mdice:.4f}"
             )
             self.save_checkpoint(join(self.output_folder, "checkpoint_best.pth"))
+
+        # Early stopping deliberately uses only the EMA-smoothed fg_mDice.
+        ema_improved = ema_fg_mdice > (
+            self._best_ema_fg_mdice + self.early_stopping_min_delta
+        )
+        if ema_improved:
+            self._best_ema_fg_mdice = ema_fg_mdice
+            self._epochs_without_improvement = 0
+            self._early_stop_requested = False
+            self.print_to_log_file(
+                "New best EMA fg_mDice for early stopping: "
+                f"{self._best_ema_fg_mdice:.4f}"
+            )
         else:
             self._epochs_without_improvement += 1
             self.print_to_log_file(
-                "fg_mDice did not improve: "
+                "EMA fg_mDice did not improve: "
                 f"{self._epochs_without_improvement}/"
                 f"{self.early_stopping_patience}"
             )
@@ -180,9 +215,36 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
                 >= self.early_stopping_patience
             )
 
+    def load_checkpoint(self, filename_or_checkpoint):
+        super().load_checkpoint(filename_or_checkpoint)
+
+        raw_history = self.logger.get_value("mean_fg_dice", step=None)
+        ema_history = self.logger.get_value("ema_fg_dice", step=None)
+
+        finite_raw = [float(value) for value in raw_history if np.isfinite(value)]
+        self._best_fg_mdice = max(finite_raw, default=-np.inf)
+
+        self._best_ema_fg_mdice = -np.inf
+        self._epochs_without_improvement = 0
+        for value in ema_history:
+            value = float(value)
+            if not np.isfinite(value):
+                continue
+            if value > (
+                self._best_ema_fg_mdice + self.early_stopping_min_delta
+            ):
+                self._best_ema_fg_mdice = value
+                self._epochs_without_improvement = 0
+            else:
+                self._epochs_without_improvement += 1
+
+        self._early_stop_requested = (
+            self._epochs_without_improvement >= self.early_stopping_patience
+        )
+
     def on_epoch_end(self):
         # Keep timing, periodic checkpoints and plots, but best checkpointing is
-        # handled above using raw fg_mDice rather than nnU-Net's EMA.
+        # handled above using raw fg_mDice. EMA is only for early stopping.
         self.logger.log("epoch_end_timestamps", time(), self.current_epoch)
         self.print_to_log_file(
             "train_loss",
@@ -227,7 +289,7 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
             self.on_epoch_end()
             if self._early_stop_requested:
                 self.print_to_log_file(
-                    "Early stopping: fg_mDice has not improved by at least "
+                    "Early stopping: EMA fg_mDice has not improved by at least "
                     f"{self.early_stopping_min_delta} for "
                     f"{self.early_stopping_patience} epochs."
                 )
