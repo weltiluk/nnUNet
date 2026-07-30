@@ -5,6 +5,12 @@ import argparse, os, re, shutil, subprocess
 from datetime import datetime
 from pathlib import Path
 
+""" C-compiler installieren:
+sudo apt update
+sudo apt install build-essential
+sudo apt install python3.12-dev
+"""
+
 TRAINER = "nnUNetTrainerDiceEarlyStoppingTensorboard"
 
 def execute(command: list[str], env: dict[str, str]) -> None:
