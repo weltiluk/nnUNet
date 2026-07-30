@@ -5,15 +5,17 @@ import argparse, os, re, shutil, subprocess
 from datetime import datetime
 from pathlib import Path
 
-""" C-compiler installieren:
-sudo apt update
-sudo apt install build-essential
-sudo apt install python3.12-dev
+""" C-compiler installieren: (und tmux)
+sudo apt update && sudo apt install -y build-essential && sudo apt install -y python3.12-dev && sudo apt install -y tmux
 """
 
-# python run_nnunet.py /workspaces/l40-workspace/nnUNet/results/real_dataset_splits_70_15_15/raw/Dataset501_real_dataset_splits_70_15_15
+"""
+python run_nnunet.py /workspaces/l40-workspace/nnUNet/results/real_dataset_splits_70_15_15/raw/Dataset501_real_dataset_splits_70_15_15 \
+&& python run_nnunet.py /workspaces/l40-workspace/nnUNet/results/r4_s1_70_15_15_brain_prior/raw/Dataset501_r4_s1_70_15_15_brain_prior
+"""
 
 TRAINER = "nnUNetTrainerDiceEarlyStoppingTensorboard"
+batch_size = 4  # mit 8 bricht workspace ab bevor epoche 1 startet
 
 def execute(command: list[str], env: dict[str, str]) -> None:
     print("+", " ".join(command), flush=True)
@@ -46,7 +48,10 @@ def main() -> None:
     results = workspace / "training" / run_name
     preprocessed.mkdir(exist_ok=True)
     results.mkdir(parents=True, exist_ok=True)
+    if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 1:
+        raise ValueError("batch_size must be an integer >= 1")
     env = os.environ.copy()
+    env["NNUNET_BATCH_SIZE"] = str(batch_size)
     env.update(nnUNet_raw=str(dataset.parent), nnUNet_preprocessed=str(preprocessed), nnUNet_results=str(results))
     if not args.skip_preprocessing:
         execute(["nnUNetv2_plan_and_preprocess", "-d", dataset_id, "--verify_dataset_integrity"], env)

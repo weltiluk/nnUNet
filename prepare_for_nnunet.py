@@ -5,7 +5,10 @@ import argparse, csv, json, re, shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-# python prepare_for_nnunet.py /workspaces/l40-workspace/welti-masterarbeit/real_dataset_splits_70_15_15
+"""
+python prepare_for_nnunet.py /workspaces/l40-workspace/welti-masterarbeit/real_dataset_splits_70_15_15
+python prepare_for_nnunet.py /workspaces/l40-workspace/welti-masterarbeit/mixed_datasets/r3_s1_70_15_15_brain_transform_image
+"""
 
 SUFFIX = ".nii.gz"
 LABELS = {"background": 0, "class_1": 1, "class_2": 2, "class_3": 3}
@@ -105,7 +108,7 @@ def main() -> None:
     splits = [{"train": [c.identifier for c in cases if c.split == "train"], "val": [c.identifier for c in cases if c.split == "validation"]}]
     (output / "splits_final.json").write_text(json.dumps(splits, indent=2) + "\n")
     print(f"Prepared dataset: {output}")
-    print(f"Next: python nnUNet/run_nnunet.py {output}")
+    print(f"Next: python run_nnunet.py {output}")
 
 if __name__ == "__main__":
     main()

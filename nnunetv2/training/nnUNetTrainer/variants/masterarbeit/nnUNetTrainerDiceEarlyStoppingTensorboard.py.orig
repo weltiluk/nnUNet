@@ -44,14 +44,6 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
             dataset_json=dataset_json,
             device=device,
         )
-        configured_batch_size = os.getenv("NNUNET_BATCH_SIZE")
-        if configured_batch_size is not None:
-            configured_batch_size = int(configured_batch_size)
-            if configured_batch_size < 1:
-                raise ValueError("NNUNET_BATCH_SIZE must be >= 1")
-            self.configuration_manager.configuration["batch_size"] = (
-                configured_batch_size
-            )
         self.early_stopping_patience = int(
             os.getenv("NNUNET_EARLY_STOPPING_PATIENCE", "15")
         )
@@ -176,14 +168,6 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
         with np.errstate(divide="ignore", invalid="ignore"):
             dice = 2 * tp / (2 * tp + fp + fn)
             iou = tp / (tp + fp + fn)
-            recall = tp / (tp + fn)
-            precision = tp / (tp + fp)
-            fscore = 2 * precision * recall / (precision + recall)
-            dice_all = 2 * tp_all / (2 * tp_all + fp_all + fn_all)
-            iou_all = tp_all / (tp_all + fp_all + fn_all)
-            recall_all = tp_all / (tp_all + fn_all)
-            precision_all = tp_all / (tp_all + fp_all)
-            fscore_all = 2 * precision_all * recall_all / (precision_all + recall_all)
         fg_mdice = float(np.nanmean(dice))
         fg_miou = float(np.nanmean(iou))
 
@@ -195,50 +179,15 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
         )
 
         metrics = {
-            "Dice": float(2 * tp.sum() / (2 * tp.sum() + fp.sum() + fn.sum())),
-            "mDice": float(np.nanmean(dice_all)),
             "fg_mDice": fg_mdice,
             "EMA_fg_mDice": ema_fg_mdice,
-            "IoU": float(tp.sum() / (tp.sum() + fp.sum() + fn.sum())),
-            "mIoU": float(np.nanmean(iou_all)),
             "fg_mIoU": fg_miou,
-            "Recall": float(tp.sum() / (tp.sum() + fn.sum())),
-            "mRecall": float(np.nanmean(recall_all)),
-            "fg_mRecall": float(np.nanmean(recall)),
-            "Precision": float(tp.sum() / (tp.sum() + fp.sum())),
-            "mPrecision": float(np.nanmean(precision_all)),
-            "fg_mPrecision": float(np.nanmean(precision)),
-            "Fscore": float(2 * tp.sum() / (2 * tp.sum() + fp.sum() + fn.sum())),
-            "mFscore": float(np.nanmean(fscore_all)),
-            "fg_mFscore": float(np.nanmean(fscore)),
         }
-        for (
-            name,
-            class_dice,
-            class_iou,
-            class_recall,
-            class_precision,
-            class_fscore,
-        ) in zip(
-            self._class_names(len(dice)),
-            dice,
-            iou,
-            recall,
-            precision,
-            fscore,
+        for name, class_dice, class_iou in zip(
+            self._class_names(len(dice)), dice, iou
         ):
             metrics[f"Dice/{name}"] = float(class_dice)
             metrics[f"IoU/{name}"] = float(class_iou)
-            metrics[f"Recall/{name}"] = float(class_recall)
-            metrics[f"Precision/{name}"] = float(class_precision)
-            metrics[f"Fscore/{name}"] = float(class_fscore)
-
-        if not self.label_manager.has_regions:
-            metrics["Dice/background"] = float(dice_all[0])
-            metrics["IoU/background"] = float(iou_all[0])
-            metrics["Recall/background"] = float(recall_all[0])
-            metrics["Precision/background"] = float(precision_all[0])
-            metrics["Fscore/background"] = float(fscore_all[0])
 
         if self._tb_writer is not None:
             self._tb_writer.add_scalar(
@@ -246,7 +195,7 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
             )
             for metric_name, value in metrics.items():
                 self._tb_writer.add_scalar(
-                    metric_name, value, self._optimizer_step
+                    f"validation/{metric_name}", value, self._optimizer_step
                 )
                 previous_best = self._best_metrics.get(metric_name, -np.inf)
                 if np.isfinite(value):
