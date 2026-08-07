@@ -5,6 +5,10 @@ import argparse, json, math, os, re, shutil, subprocess
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+import SimpleITK as sitk
+from scipy.ndimage import binary_erosion, distance_transform_edt
+
 """ C-compiler installieren: (und tmux)
 sudo apt update && sudo apt install -y build-essential && sudo apt install -y python3.12-dev && sudo apt install -y tmux
 """
@@ -42,20 +46,56 @@ def execute(command: list[str], env: dict[str, str]) -> None:
     print("+", " ".join(command), flush=True)
     subprocess.run(command, check=True, env=env)
 
-def add_precision_recall(summary_file: Path) -> None:
-    """Add precision/recall and arrange test metrics from totals to classes."""
+def _surface(mask: np.ndarray) -> np.ndarray:
+    """Return the inner surface of a 2D or 3D binary mask."""
+    return mask & ~binary_erosion(mask, border_value=0)
+
+
+def hd95_voxels(mask_ref: np.ndarray, mask_pred: np.ndarray) -> float:
+    """Symmetric HD95 in voxels, with explicit handling of empty masks."""
+    mask_ref = np.asarray(mask_ref, dtype=bool)
+    mask_pred = np.asarray(mask_pred, dtype=bool)
+    if mask_ref.shape != mask_pred.shape:
+        raise ValueError(f"Reference and prediction shapes differ: {mask_ref.shape} != {mask_pred.shape}")
+
+    ref_present = bool(mask_ref.any())
+    pred_present = bool(mask_pred.any())
+    if not ref_present and not pred_present:
+        return math.nan
+    if ref_present != pred_present:
+        # Same convention as the existing 2D evaluation, generalized to 3D.
+        return math.sqrt(sum(length ** 2 for length in mask_ref.shape))
+
+    surface_ref = _surface(mask_ref)
+    surface_pred = _surface(mask_pred)
+    ref_to_pred = distance_transform_edt(~surface_pred)[surface_ref]
+    pred_to_ref = distance_transform_edt(~surface_ref)[surface_pred]
+    # MONAI-style symmetric reduction: percentile per direction, then maximum.
+    return float(max(np.percentile(ref_to_pred, 95), np.percentile(pred_to_ref, 95)))
+
+
+def add_test_metrics(summary_file: Path) -> None:
+    """Add precision, recall and voxel-based HD95 to the nnU-Net test summary."""
     with summary_file.open(encoding="utf-8") as handle:
         summary = json.load(handle)
 
     for case in summary["metric_per_case"]:
-        for metrics in case["metrics"].values():
+        reference = sitk.GetArrayFromImage(sitk.ReadImage(case["reference_file"]))
+        prediction = sitk.GetArrayFromImage(sitk.ReadImage(case["prediction_file"]))
+        if reference.shape != prediction.shape:
+            raise ValueError(
+                f"Reference and prediction shapes differ for {case['prediction_file']}: "
+                f"{reference.shape} != {prediction.shape}"
+            )
+        for label, metrics in case["metrics"].items():
             precision_denominator = metrics["TP"] + metrics["FP"]
             recall_denominator = metrics["TP"] + metrics["FN"]
             metrics["Precision"] = metrics["TP"] / precision_denominator if precision_denominator else math.nan
             metrics["Recall"] = metrics["TP"] / recall_denominator if recall_denominator else math.nan
+            metrics["HD95"] = hd95_voxels(reference == int(label), prediction == int(label))
 
     for label, mean_metrics in summary["mean"].items():
-        for metric_name in ("Precision", "Recall"):
+        for metric_name in ("Precision", "Recall", "HD95"):
             values = [
                 case["metrics"][label][metric_name]
                 for case in summary["metric_per_case"]
@@ -64,7 +104,7 @@ def add_precision_recall(summary_file: Path) -> None:
             mean_metrics[metric_name] = sum(values) / len(values) if values else math.nan
 
     per_class = summary["mean"]
-    for metric_name in ("Precision", "Recall"):
+    for metric_name in ("Precision", "Recall", "HD95"):
         values = [
             metrics[metric_name]
             for label, metrics in per_class.items()
@@ -74,8 +114,11 @@ def add_precision_recall(summary_file: Path) -> None:
         summary["foreground_mean"][metric_name] = sum(values) / len(values) if values else math.nan
 
     overall_mean = {}
-    for metric_name in next(iter(per_class.values())):
-        values = [metrics[metric_name] for metrics in per_class.values()]
+    metric_names = {name for metrics in per_class.values() for name in metrics}
+    for metric_name in metric_names:
+        if metric_name == "HD95":
+            continue
+        values = [metrics[metric_name] for metrics in per_class.values() if metric_name in metrics]
         values = [value for value in values if not math.isnan(value)]
         overall_mean[metric_name] = sum(values) / len(values) if values else math.nan
 
@@ -165,7 +208,7 @@ def main() -> None:
                 "--include-background",
             ], env)
             summary_file = predictions / "summary.json"
-            add_precision_recall(summary_file)
+            add_test_metrics(summary_file)
             print(f"Test metrics: {summary_file}")
     print(f"Training run: {results}")
 
