@@ -177,7 +177,8 @@ def compute_metrics_on_folder(folder_ref: str, folder_pred: str, output_file: st
 def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_file: str, plans_file: str,
                                output_file: str = None,
                                num_processes: int = default_num_processes,
-                               chill: bool = False):
+                               chill: bool = False,
+                               include_background: bool = False):
     dataset_json = load_json(dataset_json_file)
     # get file ending
     file_ending = dataset_json['file_ending']
@@ -191,8 +192,11 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
         output_file = join(folder_pred, 'summary.json')
 
     lm = PlansManager(plans_file).get_label_manager(dataset_json)
+    labels_or_regions = lm.foreground_regions if lm.has_regions else (
+        lm.all_labels if include_background else lm.foreground_labels
+    )
     compute_metrics_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
-                              lm.foreground_regions if lm.has_regions else lm.foreground_labels, lm.ignore_label,
+                              labels_or_regions, lm.ignore_label,
                               num_processes, chill=chill)
 
 
@@ -226,8 +230,11 @@ def evaluate_folder_entry_point():
     parser.add_argument('-np', type=int, required=False, default=default_num_processes,
                         help=f'number of processes used. Optional. Default: {default_num_processes}')
     parser.add_argument('--chill', action='store_true', help='dont crash if folder_pred does not have all files that are present in folder_gt')
+    parser.add_argument("--include-background", action="store_true",
+                        help="include label 0 in the per-class metrics")
     args = parser.parse_args()
-    compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np, chill=args.chill)
+    compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np,
+                               chill=args.chill, include_background=args.include_background)
 
 
 def evaluate_simple_entry_point():

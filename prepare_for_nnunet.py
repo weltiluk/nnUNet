@@ -7,7 +7,14 @@ from pathlib import Path
 
 """
 python prepare_for_nnunet.py /workspaces/l40-workspace/welti-masterarbeit/real_dataset_splits_70_15_15
-python prepare_for_nnunet.py /workspaces/l40-workspace/welti-masterarbeit/mixed_datasets/r3_s1_70_15_15_brain_transform_image
+python prepare_for_nnunet.py /workspaces/l40-workspace/welti-masterarbeit/mixed_datasets/r4_s1_70_15_15_brain_transform_image_order1_dw5
+"""
+
+"""
+ \
+&& \
+python run_nnunet.py /workspaces/l40-workspace/nnUNet/results/r4_s1_70_15_15_brain_transform_image_order1/raw/Dataset501_r4_s1_70_15_15_brain_transform_image_order1
+
 """
 
 SUFFIX = ".nii.gz"

@@ -12,13 +12,20 @@ sudo apt update && sudo apt install -y build-essential && sudo apt install -y py
 """
 python run_nnunet.py /workspaces/l40-workspace/nnUNet/results/real_dataset_splits_70_15_15/raw/Dataset501_real_dataset_splits_70_15_15
 
-python run_nnunet.py /workspaces/l40-workspace/nnUNet/results/r3_s1_70_15_15_brain_transform_image/raw/Dataset501_r3_s1_70_15_15_brain_transform_image \
-&& python run_nnunet.py /workspaces/l40-workspace/nnUNet/results/r2_s1_70_15_15_brain_transform_image/raw/Dataset501_r2_s1_70_15_15_brain_transform_image \
-&& python run_nnunet.py /workspaces/l40-workspace/nnUNet/results/r1_s1_70_15_15_brain_transform_image/raw/Dataset501_r1_s1_70_15_15_brain_transform_image
+
+python run_nnunet.py \
+  results/real_dataset_splits_70_15_15/raw/Dataset501_real_dataset_splits_70_15_15 \
+  --run-name real_dataset_splits_70_15_15_run2 \
+&& python run_nnunet.py \
+  results/r4_s1_70_15_15_brain_transform_image_order1/raw/Dataset501_r4_s1_70_15_15_brain_transform_image_order1 \
+  --run-name r4_s1_70_15_15_brain_transform_image_order1_run2 \
+&& python run_nnunet.py \
+  results/r4_s1_70_15_15_brain_prior/raw/Dataset501_r4_s1_70_15_15_brain_prior \
+  --run-name r4_s1_70_15_15_brain_prior_run2
 
 """
 
-"""
+""" nur test metriken berechnen
 python run_nnunet.py \
   /workspaces/l40-workspace/nnUNet/results/r4_s1_70_15_15_brain_prior/raw/Dataset501_r4_s1_70_15_15_brain_prior \
   --run-name 20260802_105902 \
@@ -36,7 +43,7 @@ def execute(command: list[str], env: dict[str, str]) -> None:
     subprocess.run(command, check=True, env=env)
 
 def add_precision_recall(summary_file: Path) -> None:
-    """Add macro-averaged precision and recall to an nnU-Net summary."""
+    """Add precision/recall and arrange test metrics from totals to classes."""
     with summary_file.open(encoding="utf-8") as handle:
         summary = json.load(handle)
 
@@ -56,10 +63,27 @@ def add_precision_recall(summary_file: Path) -> None:
             ]
             mean_metrics[metric_name] = sum(values) / len(values) if values else math.nan
 
+    per_class = summary["mean"]
     for metric_name in ("Precision", "Recall"):
-        values = [metrics[metric_name] for metrics in summary["mean"].values()]
+        values = [
+            metrics[metric_name]
+            for label, metrics in per_class.items()
+            if label != "0"
+        ]
         values = [value for value in values if not math.isnan(value)]
         summary["foreground_mean"][metric_name] = sum(values) / len(values) if values else math.nan
+
+    overall_mean = {}
+    for metric_name in next(iter(per_class.values())):
+        values = [metrics[metric_name] for metrics in per_class.values()]
+        values = [value for value in values if not math.isnan(value)]
+        overall_mean[metric_name] = sum(values) / len(values) if values else math.nan
+
+    summary = {
+        "foreground_mean": summary["foreground_mean"],
+        "mean": {"all_classes": overall_mean, **per_class},
+        "metric_per_case": summary["metric_per_case"],
+    }
 
     with summary_file.open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=4)
@@ -138,6 +162,7 @@ def main() -> None:
                 "-pfile", str(plans_json),
                 "-o", str(predictions / "summary.json"),
                 "-np", str(args.evaluation_processes),
+                "--include-background",
             ], env)
             summary_file = predictions / "summary.json"
             add_precision_recall(summary_file)
