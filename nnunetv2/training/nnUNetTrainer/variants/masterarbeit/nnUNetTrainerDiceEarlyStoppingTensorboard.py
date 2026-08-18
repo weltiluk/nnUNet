@@ -7,6 +7,7 @@ foreground mean Dice.
 """
 
 import os
+import random
 from os.path import join
 from time import time
 from typing import List
@@ -97,6 +98,17 @@ class nnUNetTrainerDiceEarlyStoppingTensorboard(nnUNetTrainer):
         ]
 
     def on_train_start(self):
+        # Seed immediately before the base trainer initializes the network so
+        # runs with the same architecture start from identical weights. We do
+        # not force deterministic CUDA algorithms or data augmentation here,
+        # because those settings would reduce training performance.
+        seed = 42
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
         super().on_train_start()
         self._optimizer_step = self.current_epoch * self.num_iterations_per_epoch
         if self.local_rank == 0:
